@@ -1002,7 +1002,164 @@
       // nên liền mạch, không có khoảng dừng ~1 giây như khi lặp bằng thẻ
       // <audio> thường. Trình duyệt chặn tự phát tiếng nên chỉ phát khi
       // khách bấm nút.
-      var SONG_URL = window.__ASSETS;
+      var SONG_URL = window.__ASSETS["assets/song-nam-cua-viet-v3-seamless.mp3"];
+      var soundBtn = document.getElementById("sound-btn");
+      var soundLabel = document.getElementById("sound-label");
+      var welcomeListen = document.getElementById("welcome-listen");
+      var welcomeListenLabel = document.getElementById("welcome-listen-label");
+      var songCtx = null;      // AudioContext, tạo khi khách bấm nghe lần đầu
+      var songGain = null;     // nút âm lượng chung (0.6 như trước)
+      var songBuffer = null;   // AudioBuffer đã giải mã, dùng lại mỗi lần phát
+      var songSource = null;   // AudioBufferSourceNode đang phát (null = đang tắt)
+      var songLoading = null;  // promise tải + giải mã file, tránh tải trùng
+      // Tải trước file tiếng sóng ngay khi mở trang (không tự phát), để bấm
+      // là nghe ngay, không delay chờ tải.
+      function loadSongBuffer() {
+        if (songBuffer) { return Promise.resolve(songBuffer); }
+        if (!songLoading) {
+          songLoading = fetch(SONG_URL)
+            .then(function (r) { return r.arrayBuffer(); })
+            .then(function (data) {
+              if (!songCtx) {
+                var AC = window.AudioContext || window.webkitAudioContext;
+                songCtx = new AC();
+              }
+              return songCtx.decodeAudioData(data);
+            })
+            .then(function (buf) { songBuffer = buf; songLoading = null; return buf; })
+            .catch(function () { songLoading = null; return null; });
+        }
+        return songLoading;
+      }
+      loadSongBuffer();
+      function startSong() {
+        var AC = window.AudioContext || window.webkitAudioContext;
+        if (!AC) { return; }
+        if (!songCtx) { songCtx = new AC(); }
+        if (!songGain) {
+          songGain = songCtx.createGain();
+          songGain.gain.value = 0.6;
+          songGain.connect(songCtx.destination);
+        }
+        if (songCtx.state === "suspended") { songCtx.resume(); }
+        loadSongBuffer().then(function (buf) {
+          if (!buf || songSource) { return; }
+          var src = songCtx.createBufferSource();
+          src.buffer = buf;
+          src.loop = true;
+          src.connect(songGain);
+          src.start(0);
+          songSource = src;
+          reflectSound(true);
+        });
+      }
+      function stopSong() {
+        if (songSource) {
+          try { songSource.stop(); } catch (e) {}
+          try { songSource.disconnect(); } catch (e) {}
+          songSource = null;
+        }
+        reflectSound(false);
+      }
+      function reflectSound(on) {
+        soundBtn.classList.toggle("playing", on);
+        soundBtn.setAttribute("aria-pressed", on ? "true" : "false");
+        soundBtn.setAttribute("aria-label", on ? "Tắt tiếng sóng biển" : "Nghe tiếng sóng biển");
+        soundBtn.setAttribute("title", on ? "Tắt sóng" : "Nghe sóng");
+        soundLabel.textContent = on ? "Tắt sóng" : "Nghe sóng";
+        welcomeListen.classList.toggle("playing", on);
+        welcomeListen.setAttribute("aria-pressed", on ? "true" : "false");
+        welcomeListenLabel.textContent = on ? "Đang phát tiếng sóng — bấm để tắt" : "Nghe tiếng sóng biển";
+      }
+      function toggleSound() {
+        if (songSource) {
+          stopSong();
+        } else {
+          startSong();
+        }
+      }
+      soundBtn.addEventListener("click", toggleSound);
+      welcomeListen.addEventListener("click", toggleSound);
+
+      // Màn chào: hiện ở MỌI lần mở trang — ảnh bình minh biển Cửa Việt và
+      // tiếng sóng trước, lô đất sau. "Xem các lô đất" hoặc nút ✕ thì màn chào
+      // biến mất, cuộn xuống danh sách lô. Tiếng sóng nếu đang bật vẫn phát
+      // tiếp khi khách xem lô.
+      var welcome = document.getElementById("welcome");
+      function closeWelcome(scrollToLots) {
+        welcome.classList.add("gone");
+        document.body.classList.remove("welcome-open");
+        if (scrollToLots) {
+          var target = document.getElementById("bang-gia");
+          if (target) {
+            var reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+            target.scrollIntoView({ behavior: reduce ? "auto" : "smooth" });
+          }
+        }
+      }
+      document.getElementById("welcome-view").addEventListener("click", function () { closeWelcome(true); });
+      document.getElementById("welcome-close").addEventListener("click", function () { closeWelcome(false); });
+      // Nút "Xem biển, nghe tiếng sóng" ở đầu trang: mở lại màn chào với ảnh
+      // bình minh Cửa Việt. Tiếng sóng KHÔNG tự phát khi mở lại màn chào —
+      // nếu đang phát thì dừng lại, nút về trạng thái "Nghe tiếng sóng biển",
+      // khách bấm nút nghe thì mới phát.
+      var heroWatchBtn = document.getElementById("hero-watch-video");
+      if (heroWatchBtn) {
+        heroWatchBtn.addEventListener("click", function () {
+          welcome.classList.remove("gone");
+          document.body.classList.add("welcome-open");
+          window.scrollTo(0, 0);
+          if (songSource) { stopSong(); } else { reflectSound(false); }
+        });
+      }
+
+      // Lọc lô theo khu + theo ngân sách (hai bộ lọc chạy kết hợp)
+      var zoneBtns = document.querySelectorAll(".filter[data-filter]");
+      var budgetBtns = document.querySelectorAll(".filter[data-budget]");
+      var lots = document.querySelectorAll(".lot");
+      var noLots = document.getElementById("no-lots");
+      var activeZone = "all";
+      var activeBudget = "all";
+      function budgetOk(card) {
+        if (activeBudget === "all") { return true; }
+        var g = parseFloat(card.getAttribute("data-gia"));
+        if (isNaN(g)) { return false; }
+        if (activeBudget === "u500") { return g < 500; }
+        if (activeBudget === "500-1000") { return g >= 500 && g <= 1000; }
+        if (activeBudget === "1000-3000") { return g > 1000 && g <= 3000; }
+        if (activeBudget === "o3000") { return g > 3000; }
+        return true;
+      }
+      function applyFilters() {
+        var visible = 0;
+        lots.forEach(function (card) {
+          var show = (activeZone === "all" || card.getAttribute("data-khu") === activeZone) && budgetOk(card);
+          card.style.display = show ? "" : "none";
+          if (show) { visible++; }
+        });
+        if (noLots) { noLots.hidden = visible > 0; }
+      }
+      zoneBtns.forEach(function (btn) {
+        btn.addEventListener("click", function () {
+          zoneBtns.forEach(function (b) { b.setAttribute("aria-pressed", "false"); });
+          btn.setAttribute("aria-pressed", "true");
+          activeZone = btn.getAttribute("data-filter");
+          applyFilters();
+        });
+      });
+      budgetBtns.forEach(function (btn) {
+        btn.addEventListener("click", function () {
+          budgetBtns.forEach(function (b) { b.setAttribute("aria-pressed", "false"); });
+          btn.setAttribute("aria-pressed", "true");
+          activeBudget = btn.getAttribute("data-budget");
+          applyFilters();
+        });
+      });
+
+      // Tải trước ảnh flycam + mặt bằng sau khi trang chính đã hiện xong,
+      // để khách cuộn nhanh xuống không gặp khung xám trống chờ ảnh.
+      window.addEventListener("load", function () {
+        var preload = function () {};
         };
         if ("requestIdleCallback" in window) { requestIdleCallback(preload, { timeout: 2500 }); }
         else { setTimeout(preload, 1200); }
